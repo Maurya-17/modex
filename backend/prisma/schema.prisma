@@ -1,0 +1,91 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  ADMIN
+  USER
+}
+
+enum SeatStatus {
+  AVAILABLE
+  HELD
+  BOOKED
+}
+
+enum BookingStatus {
+  PENDING
+  CONFIRMED
+  FAILED
+}
+
+model User {
+  id        String   @id @default(uuid())
+  name      String
+  role      UserRole @default(USER)
+  createdAt DateTime @default(now())
+
+  bookings Booking[]
+
+  @@index([role])
+}
+
+model Show {
+  id         String   @id @default(uuid())
+  title      String
+  startTime  DateTime
+  totalSeats Int
+  createdAt  DateTime @default(now())
+
+  seats    Seat[]
+  bookings Booking[]
+
+  @@index([startTime])
+}
+
+model Seat {
+  id              String     @id @default(uuid())
+  showId          String
+  seatNumber      Int
+  status          SeatStatus @default(AVAILABLE)
+  heldByBookingId String?
+
+  show            Show       @relation(fields: [showId], references: [id], onDelete: Cascade)
+  heldByBooking   Booking?   @relation(fields: [heldByBookingId], references: [id], onDelete: SetNull)
+
+  @@unique([showId, seatNumber])
+  @@index([showId])
+  @@index([showId, seatNumber])
+  @@index([status])
+  @@index([heldByBookingId])
+}
+
+model Booking {
+  id        String        @id @default(uuid())
+  showId    String
+  userId    String
+  seats     Json // Array of seatNumbers: number[]
+  status    BookingStatus @default(PENDING)
+  version   Int           @default(1)
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  show      Show          @relation(fields: [showId], references: [id], onDelete: Cascade)
+  user      User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  heldSeats Seat[]
+
+  @@index([showId])
+  @@index([userId])
+  @@index([status])
+  @@index([status, createdAt])
+}
+
+

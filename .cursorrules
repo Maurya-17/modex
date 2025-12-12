@@ -1,0 +1,217 @@
+# 🎯 Project: Modex Full-Stack Ticket Booking System
+
+You are an expert full-stack engineer working inside Cursor.  
+
+Your job: **generate and maintain a complete, production-like Ticket Booking System** that fulfills a Modex-style full stack assessment with backend, frontend, tests, deployment and documentation.
+
+Whenever the user asks for implementation, scaffolding, fixes, or additions, you MUST follow these rules and this spec.
+
+---
+
+## 1. Tech Stack (HARD REQUIREMENTS)
+
+- **Backend**
+  - Node.js (v18+)
+  - TypeScript
+  - Express.js
+  - PostgreSQL (>= 13)
+  - Prisma ORM (preferred; if not, `pg` is acceptable)
+  - Optional: Redis + Bull/Node-cron for booking expiry
+  - Testing: Jest + Supertest
+  - Docs: Swagger/OpenAPI (YAML or JSON) + Postman collection
+  - Containerization: Dockerfile + docker-compose for backend + Postgres (+ Redis if used)
+
+- **Frontend**
+  - React.js + TypeScript
+  - Vite (preferred)
+  - React Router
+  - Context API for auth & show/booking state
+  - Clean, responsive UI
+
+- **Deployment**
+  - Backend deployed (e.g., Railway or Render)
+  - Frontend deployed (e.g., Vercel or Netlify)
+  - Frontend uses environment variable for backend base URL (e.g. `VITE_API_BASE_URL`)
+
+---
+
+## 2. Data Model (Postgres + Prisma)
+
+Implement the following entities (adapt names slightly if needed, but keep semantics):
+
+- `User`
+  - `id` (string/UUID)
+  - `name` (string)
+  - `role` enum → `ADMIN` | `USER`
+  - `createdAt` (DateTime, default now)
+
+- `Show`
+  - `id`
+  - `title`
+  - `startTime` (DateTime)
+  - `totalSeats` (int)
+  - `createdAt`
+
+- `Seat`
+  - `id`
+  - `showId` (FK → Show)
+  - `seatNumber` (int)
+  - `status` enum → `AVAILABLE` | `HELD` | `BOOKED`
+  - `heldByBookingId` (nullable FK → Booking)
+
+- `Booking`
+  - `id`
+  - `showId` (FK → Show)
+  - `userId` (FK → User)
+  - `seats` (JSON array of seatNumbers or seatIds)
+  - `status` enum → `PENDING` | `CONFIRMED` | `FAILED`
+  - `createdAt`
+  - `updatedAt`
+  - `version` (int, default 1, for optimistic locking if needed)
+
+Add proper indexes on `showId`, `seatNumber`, and relevant foreign keys.
+
+---
+
+## 3. Backend API Specification
+
+Base path: `/api`
+
+### 3.1 Admin Endpoints
+
+- `POST /api/admin/shows`
+  - Body: `{ title: string, startTime: string (ISO), totalSeats: number }`
+  - Behavior:
+    - Create a `Show`
+    - Pre-generate `totalSeats` `Seat` rows with `status = AVAILABLE` and `seatNumber` 1..totalSeats
+  - Auth: Assume a simple mock or `role === ADMIN` in future; for now can be unsecured or mocked.
+
+### 3.2 User Endpoints
+
+- `GET /api/shows`
+  - Returns list of shows with basic info.
+
+- `GET /api/shows/:id/seats`
+  - Returns seat grid for a show:
+    - `seatNumber`
+    - `status` (AVAILABLE | HELD | BOOKED)
+
+- `POST /api/shows/:id/book`
+  - Body: `{ userId: string, seats: number[] }` (seatNumbers)
+  - Behavior (MUST be concurrency-safe):
+    1. Start DB transaction.
+    2. Lock the requested seats using `SELECT ... FOR UPDATE` (or Prisma equivalent).
+    3. If any requested seat is not `AVAILABLE`, abort with conflict (409) and descriptive message.
+    4. Create `Booking` with `status = PENDING` and `seats` array.
+    5. Mark those `Seat` rows as `HELD` and set `heldByBookingId`.
+    6. Commit transaction.
+    7. Return `{ bookingId, status: 'PENDING' }`.
+
+- `GET /api/bookings/:id`
+  - Returns booking details and status (`PENDING` | `CONFIRMED` | `FAILED`).
+
+- `POST /api/bookings/:id/confirm`
+  - Simulates successful payment.
+  - Behavior (transactional):
+    1. Load booking with row lock (if using optimistic lock, check `version`).
+    2. If `status !== PENDING`, return error.
+    3. Set seats to `BOOKED`, clear `heldByBookingId`.
+    4. Set booking `status = CONFIRMED`.
+    5. Commit.
+
+- `DELETE /api/bookings/:id/cancel`
+  - Behavior (transactional):
+    1. If booking `PENDING`, set `status = FAILED`, release seats to `AVAILABLE`.
+    2. If already `CONFIRMED`, either forbid or explain behavior in code comments.
+
+---
+
+## 4. Concurrency & Booking Expiry
+
+### 4.1 Concurrency (NO OVERBOOKING)
+
+You MUST implement concurrency control so that multiple users cannot book the same seat beyond capacity.
+
+Preferred approach:
+
+- Use Postgres row-level locks:
+  - Inside transaction:
+    - `SELECT * FROM Seat WHERE showId = $1 AND seatNumber IN (...) FOR UPDATE;`
+  - Validate `status === AVAILABLE` for all seats before proceeding.
+  - Update them to `HELD` and create `PENDING` booking.
+- If a race occurs, second requester will find some seats not AVAILABLE; return HTTP 409 with a helpful message.
+
+You may optionally add:
+- Optimistic locking using `version` on `Booking`
+- Or Postgres advisory locks keyed on `showId` or `showId + seatNumber`
+
+### 4.2 Booking Expiry (MANDATORY BONUS)
+
+Implement booking timeout logic so that `PENDING` bookings auto-expire after a short window (e.g. 2 minutes):
+
+Options (choose one and implement):
+
+- **Redis + Bull**:
+  - When creating PENDING booking, enqueue job with delay = 2 minutes.
+  - Job:
+    - If booking still `PENDING`, mark `FAILED` and free seats back to `AVAILABLE`.
+
+- **Node-cron / polling job**:
+  - Periodic job (e.g., every minute) scanning for `PENDING` bookings older than 2 minutes.
+  - Mark them `FAILED`, release seats.
+
+- **setTimeout (demo-level)**:
+  - On creation, setTimeout for 2 minutes to check and expire booking if still `PENDING`.
+  - Note limitations in README (not robust for multi-instance).
+
+---
+
+## 5. Backend Quality Requirements
+
+- Use TypeScript throughout
+- Proper error handling with meaningful HTTP status codes
+- Input validation (use `zod` or similar)
+- Environment variables for configuration
+- Logging (winston or similar)
+- CORS configured for frontend
+- Health check endpoint
+
+---
+
+## 6. Frontend Requirements
+
+- Responsive design (mobile-friendly)
+- Show list page
+- Seat selection page with visual grid
+- Booking confirmation flow
+- Error handling and user feedback
+- Loading states
+- Context API for managing user state and bookings
+
+---
+
+## 7. Testing
+
+- Backend: Unit tests for services, integration tests for API endpoints
+- Test concurrency scenarios
+- Test booking expiry
+- Frontend: Component tests (optional but recommended)
+
+---
+
+## 8. Documentation
+
+- README.md with setup instructions
+- API documentation (Swagger/OpenAPI)
+- Postman collection
+- Environment variable documentation
+
+---
+
+## 9. Deployment
+
+- Dockerfile for backend
+- docker-compose.yml for local development (backend + Postgres + Redis)
+- Deployment instructions for Railway/Render (backend) and Vercel/Netlify (frontend)
+
+
